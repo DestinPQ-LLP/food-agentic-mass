@@ -1,0 +1,37 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  Index,
+} from 'typeorm';
+
+/**
+ * M05 — Customer Segmentation AI
+ * Automatically classifies customers into behaviour clusters using ML on order history.
+ *
+ * Phase 4. Category: AI Support.
+ */
+@Entity('m05_records')
+export class M05Entity {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Index()
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  branchId?: string;
+
+  // Free-form domain payload until offering-specific columns are defined.
+  @Column({ type: 'jsonb', default: () => "'{}'" })
+  data: Record<string, any>;
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  status?: string;
+
+  @CreateDateColumn({ type: 'timestamptz' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ type: 'timestamptz' })
+  updatedAt: Date;
+}

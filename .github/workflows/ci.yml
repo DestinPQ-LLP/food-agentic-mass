@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: Backend (NestJS)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint -- --max-warnings=200
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test --if-present
+
+  manifest:
+    name: Validate offerings manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate manifest count and shape
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          m = json.load(open('scripts/offerings-manifest.json'))
+          offerings = m['offerings']
+          assert len(offerings) == 252, f"expected 252 offerings, got {len(offerings)}"
+          expected = {f"{c}{n:02d}" for c in "ABCDEFGHIJKLMN" for n in range(1, 19)}
+          got = {o['id'] for o in offerings}
+          missing = expected - got
+          extra = got - expected
+          assert not missing, f"missing: {sorted(missing)}"
+          assert not extra, f"unexpected: {sorted(extra)}"
+          for o in offerings:
+              assert o['endpoints'], f"{o['id']} has no endpoints"
+              assert o['features'],  f"{o['id']} has no features"
+              assert o['cdnUrl'].startswith('https://food-agentic-mass.azureedge.net/offerings/'), \
+                  f"{o['id']} unexpected cdnUrl: {o['cdnUrl']}"
+          print(f"✓ {len(offerings)} offerings validated")
+          PY
+
+  frontends:
+    name: Frontend pages exist (252)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          count=$(find frontend/offerings -mindepth 2 -maxdepth 2 -name index.html | wc -l | tr -d ' ')
+          echo "Found $count offering pages"
+          if [ "$count" != "252" ]; then
+            echo "::error::expected 252 offering pages, found $count"
+            exit 1
+          fi
