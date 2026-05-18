@@ -27,7 +27,7 @@ DB_SERVER="${AZURE_DB_SERVER:-food-agentic-mass-db}"            # must be global
 DB_NAME="${AZURE_DB_NAME:-food_agentic_mass_db}"
 DB_ADMIN="${AZURE_DB_ADMIN:-famadmin}"
 DB_PASS="${AZURE_DB_PASS:?Set AZURE_DB_PASS env var to a strong password}"
-NODE_VERSION="${NODE_VERSION:-NODE|20-lts}"
+NODE_VERSION="${NODE_VERSION:-NODE:22-lts}"
 
 say() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 

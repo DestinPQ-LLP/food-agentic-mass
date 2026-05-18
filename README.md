@@ -39,7 +39,7 @@ food-agentic-mass/
 
 ### Prerequisites
 
-- Node.js **20 LTS** + npm 10+
+- Node.js **22 LTS** + npm 10+
 - PostgreSQL **15+** running locally
 - (Optional) Azure CLI for deployments
 - Python 3.10+ (only for re-running `parse-offerings.py` / generators)
