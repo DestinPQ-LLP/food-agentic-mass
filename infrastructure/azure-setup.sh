@@ -40,7 +40,7 @@ az storage account create \
 
 say "Enabling static website on $STORAGE (\$web)"
 az storage blob service-properties update \
-  --account-name "$STORAGE" --static-website \
+  --account-name "$STORAGE" --auth-mode login --static-website \
   --index-document index.html --404-document 404.html >/dev/null
 
 PRIMARY_WEB_HOST="$(az storage account show \
@@ -49,19 +49,31 @@ PRIMARY_WEB_HOST="$(az storage account show \
 say "Primary web endpoint: https://$PRIMARY_WEB_HOST"
 
 # ---------------------------- CDN profile + endpoint -------------------------
-say "CDN profile: $CDN_PROFILE"
-az cdn profile create \
-  --name "$CDN_PROFILE" --resource-group "$RG" --location "$LOCATION" \
-  --sku Standard_Microsoft >/dev/null
+# Classic Azure CDN (Standard_Microsoft) is being phased out in favour of
+# Azure Front Door, but new Standard_Microsoft profiles can still be created
+# on Sponsorship subscriptions through 2026. If this step ever fails with
+# "SKU not supported", switch to Azure Front Door — see the comment below.
+say "CDN profile: $CDN_PROFILE (Standard_Microsoft)"
+if az cdn profile show --name "$CDN_PROFILE" --resource-group "$RG" >/dev/null 2>&1; then
+  say "  ↳ already exists, skipping create"
+else
+  az cdn profile create \
+    --name "$CDN_PROFILE" --resource-group "$RG" \
+    --sku Standard_Microsoft >/dev/null
+fi
 
 say "CDN endpoint: $CDN_ENDPOINT.azureedge.net → $PRIMARY_WEB_HOST"
-az cdn endpoint create \
-  --name "$CDN_ENDPOINT" --profile-name "$CDN_PROFILE" --resource-group "$RG" \
-  --origin "$PRIMARY_WEB_HOST" --origin-host-header "$PRIMARY_WEB_HOST" \
-  --enable-compression true --no-http true \
-  --content-types-to-compress \
-    'application/javascript' 'application/json' 'text/css' 'text/html' 'image/svg+xml' \
-  >/dev/null
+if az cdn endpoint show --name "$CDN_ENDPOINT" --profile-name "$CDN_PROFILE" --resource-group "$RG" >/dev/null 2>&1; then
+  say "  ↳ already exists, skipping create"
+else
+  az cdn endpoint create \
+    --name "$CDN_ENDPOINT" --profile-name "$CDN_PROFILE" --resource-group "$RG" \
+    --origin "$PRIMARY_WEB_HOST" --origin-host-header "$PRIMARY_WEB_HOST" \
+    --enable-compression true --no-http true \
+    --content-types-to-compress \
+      'application/javascript' 'application/json' 'text/css' 'text/html' 'image/svg+xml' \
+    >/dev/null
+fi
 
 cat <<NOTE
 
@@ -80,26 +92,42 @@ NOTE
 
 # ---------------------------- PostgreSQL Flexible Server ---------------------
 say "PostgreSQL Flexible Server: $DB_SERVER"
-az postgres flexible-server create \
-  --name "$DB_SERVER" --resource-group "$RG" --location "$LOCATION" \
-  --admin-user "$DB_ADMIN" --admin-password "$DB_PASS" \
-  --tier Burstable --sku-name Standard_B1ms --storage-size 32 \
-  --version 15 --public-access 0.0.0.0 --yes >/dev/null
+if az postgres flexible-server show --name "$DB_SERVER" --resource-group "$RG" >/dev/null 2>&1; then
+  say "  ↳ already exists, skipping create"
+else
+  az postgres flexible-server create \
+    --name "$DB_SERVER" --resource-group "$RG" --location "$LOCATION" \
+    --admin-user "$DB_ADMIN" --admin-password "$DB_PASS" \
+    --tier Burstable --sku-name Standard_B1ms --storage-size 32 \
+    --version 15 --public-access 0.0.0.0 --yes >/dev/null
+fi
 
 say "Creating database: $DB_NAME"
-az postgres flexible-server db create \
-  --resource-group "$RG" --server-name "$DB_SERVER" --database-name "$DB_NAME" >/dev/null
+if az postgres flexible-server db show --resource-group "$RG" --server-name "$DB_SERVER" --database-name "$DB_NAME" >/dev/null 2>&1; then
+  say "  ↳ already exists, skipping create"
+else
+  az postgres flexible-server db create \
+    --resource-group "$RG" --server-name "$DB_SERVER" --database-name "$DB_NAME" >/dev/null
+fi
 
 # ---------------------------- App Service plan + Node 20 ---------------------
 say "App Service plan: $APP_PLAN (Linux B1)"
-az appservice plan create \
-  --name "$APP_PLAN" --resource-group "$RG" --location "$LOCATION" \
-  --is-linux --sku B1 >/dev/null
+if az appservice plan show --name "$APP_PLAN" --resource-group "$RG" >/dev/null 2>&1; then
+  say "  ↳ already exists, skipping create"
+else
+  az appservice plan create \
+    --name "$APP_PLAN" --resource-group "$RG" --location "$LOCATION" \
+    --is-linux --sku B1 >/dev/null
+fi
 
 say "Web App: $APP_NAME"
-az webapp create \
-  --name "$APP_NAME" --plan "$APP_PLAN" --resource-group "$RG" \
-  --runtime "$NODE_VERSION" >/dev/null
+if az webapp show --name "$APP_NAME" --resource-group "$RG" >/dev/null 2>&1; then
+  say "  ↳ already exists, skipping create"
+else
+  az webapp create \
+    --name "$APP_NAME" --plan "$APP_PLAN" --resource-group "$RG" \
+    --runtime "$NODE_VERSION" >/dev/null
+fi
 
 DB_HOST="${DB_SERVER}.postgres.database.azure.com"
 say "Configuring App Service settings (DB host: $DB_HOST)"
