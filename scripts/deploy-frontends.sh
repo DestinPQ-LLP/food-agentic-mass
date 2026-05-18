@@ -18,8 +18,8 @@ MANIFEST="$ROOT/scripts/offerings-manifest.json"
 OFFERINGS_DIR="$ROOT/frontend/offerings"
 
 ACCOUNT="${AZURE_STORAGE_ACCOUNT:-foodagenticmasscdn}"
-PROFILE="${AZURE_CDN_PROFILE_NAME:-food-agentic-mass-cdn-profile}"
-ENDPOINT="${AZURE_CDN_ENDPOINT_NAME:-food-agentic-mass}"
+AFD_PROFILE="${AZURE_AFD_PROFILE:-food-agentic-mass-cdn-profile}"
+AFD_ENDPOINT="${AZURE_AFD_ENDPOINT:-food-agentic-mass}"
 RG="${AZURE_RESOURCE_GROUP:-food-agentic-mass-rg}"
 
 if ! command -v jq >/dev/null; then
@@ -56,9 +56,12 @@ for id in $ids; do
   upload_one "$id"
 done
 
-echo "Purging CDN cache for /offerings/* …"
-az cdn endpoint purge \
-  --name "$ENDPOINT" --profile-name "$PROFILE" --resource-group "$RG" \
+echo "Purging Front Door cache for /offerings/* …"
+az afd endpoint purge \
+  --endpoint-name "$AFD_ENDPOINT" --profile-name "$AFD_PROFILE" --resource-group "$RG" \
   --content-paths '/offerings/*' --no-wait
 
-echo "Done. Catalogue: https://${ENDPOINT}.azureedge.net/offerings/"
+AFD_HOST="$(az afd endpoint show \
+  --endpoint-name "$AFD_ENDPOINT" --profile-name "$AFD_PROFILE" --resource-group "$RG" \
+  --query hostName -o tsv 2>/dev/null || echo '<resolve-via-portal>')"
+echo "Done. Catalogue: https://${AFD_HOST}/offerings/"

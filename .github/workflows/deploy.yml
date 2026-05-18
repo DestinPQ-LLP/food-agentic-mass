@@ -9,18 +9,19 @@ on:
 #   AZURE_CREDENTIALS              — SDK-auth JSON from `az ad sp create-for-rbac --sdk-auth`
 #   AZURE_STORAGE_CONN_STR         — storage account connection string ($web container)
 #   AZURE_WEBAPP_PUBLISH_PROFILE   — App Service publish profile (XML)
+# Repository variables (optional, with defaults):
 #   AZURE_RESOURCE_GROUP           — defaults to food-agentic-mass-rg
 #   AZURE_STORAGE_ACCOUNT          — defaults to foodagenticmasscdn
-#   AZURE_CDN_PROFILE_NAME         — defaults to food-agentic-mass-cdn-profile
-#   AZURE_CDN_ENDPOINT_NAME        — defaults to food-agentic-mass
+#   AZURE_AFD_PROFILE              — defaults to food-agentic-mass-cdn-profile
+#   AZURE_AFD_ENDPOINT             — defaults to food-agentic-mass
 #   AZURE_WEBAPP_NAME              — defaults to food-agentic-mass-api
 
 env:
-  AZURE_STORAGE_ACCOUNT:    ${{ vars.AZURE_STORAGE_ACCOUNT  || 'foodagenticmasscdn' }}
-  AZURE_RESOURCE_GROUP:     ${{ vars.AZURE_RESOURCE_GROUP   || 'food-agentic-mass-rg' }}
-  AZURE_CDN_PROFILE_NAME:   ${{ vars.AZURE_CDN_PROFILE_NAME || 'food-agentic-mass-cdn-profile' }}
-  AZURE_CDN_ENDPOINT_NAME:  ${{ vars.AZURE_CDN_ENDPOINT_NAME || 'food-agentic-mass' }}
-  AZURE_WEBAPP_NAME:        ${{ vars.AZURE_WEBAPP_NAME      || 'food-agentic-mass-api' }}
+  AZURE_STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT || 'foodagenticmasscdn' }}
+  AZURE_RESOURCE_GROUP:  ${{ vars.AZURE_RESOURCE_GROUP  || 'food-agentic-mass-rg' }}
+  AZURE_AFD_PROFILE:     ${{ vars.AZURE_AFD_PROFILE     || 'food-agentic-mass-cdn-profile' }}
+  AZURE_AFD_ENDPOINT:    ${{ vars.AZURE_AFD_ENDPOINT    || 'food-agentic-mass' }}
+  AZURE_WEBAPP_NAME:     ${{ vars.AZURE_WEBAPP_NAME     || 'food-agentic-mass-api' }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -118,12 +119,12 @@ jobs:
               --overwrite --output none
           done
 
-      - name: Purge CDN for ${{ matrix.category }}
+      - name: Purge Front Door for ${{ matrix.category }}
         run: |
           for id in ${{ steps.ids.outputs.ids }}; do
-            az cdn endpoint purge \
-              --name "$AZURE_CDN_ENDPOINT_NAME" \
-              --profile-name "$AZURE_CDN_PROFILE_NAME" \
+            az afd endpoint purge \
+              --endpoint-name "$AZURE_AFD_ENDPOINT" \
+              --profile-name "$AZURE_AFD_PROFILE" \
               --resource-group "$AZURE_RESOURCE_GROUP" \
               --content-paths "/offerings/$id/*" \
               --no-wait
@@ -151,9 +152,9 @@ jobs:
             --name 'offerings/index.html' \
             --file 'frontend/offerings/index.html' \
             --overwrite --output none
-          az cdn endpoint purge \
-            --name "$AZURE_CDN_ENDPOINT_NAME" \
-            --profile-name "$AZURE_CDN_PROFILE_NAME" \
+          az afd endpoint purge \
+            --endpoint-name "$AZURE_AFD_ENDPOINT" \
+            --profile-name "$AZURE_AFD_PROFILE" \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --content-paths "/offerings/index.html" \
             --no-wait

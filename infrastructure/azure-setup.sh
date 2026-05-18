@@ -16,8 +16,11 @@ set -euo pipefail
 LOCATION="${AZURE_LOCATION:-centralindia}"
 RG="${AZURE_RESOURCE_GROUP:-food-agentic-mass-rg}"
 STORAGE="${AZURE_STORAGE_ACCOUNT:-foodagenticmasscdn}"          # must be globally unique
-CDN_PROFILE="${AZURE_CDN_PROFILE_NAME:-food-agentic-mass-cdn-profile}"
-CDN_ENDPOINT="${AZURE_CDN_ENDPOINT_NAME:-food-agentic-mass}"    # must be globally unique
+AFD_PROFILE="${AZURE_AFD_PROFILE:-food-agentic-mass-cdn-profile}"
+AFD_ENDPOINT="${AZURE_AFD_ENDPOINT:-food-agentic-mass}"         # prefix for *.z01.azurefd.net
+AFD_ORIGIN_GROUP="${AZURE_AFD_ORIGIN_GROUP:-fam-storage-og}"
+AFD_ORIGIN="${AZURE_AFD_ORIGIN:-fam-storage-origin}"
+AFD_ROUTE="${AZURE_AFD_ROUTE:-default-route}"
 APP_PLAN="${AZURE_APP_PLAN:-food-agentic-mass-plan}"
 APP_NAME="${AZURE_APP_NAME:-food-agentic-mass-api}"             # must be globally unique
 DB_SERVER="${AZURE_DB_SERVER:-food-agentic-mass-db}"            # must be globally unique
@@ -48,45 +51,89 @@ PRIMARY_WEB_HOST="$(az storage account show \
   --query 'primaryEndpoints.web' -o tsv | sed -E 's#https?://([^/]+)/?#\1#')"
 say "Primary web endpoint: https://$PRIMARY_WEB_HOST"
 
-# ---------------------------- CDN profile + endpoint -------------------------
-# Classic Azure CDN (Standard_Microsoft) is being phased out in favour of
-# Azure Front Door, but new Standard_Microsoft profiles can still be created
-# on Sponsorship subscriptions through 2026. If this step ever fails with
-# "SKU not supported", switch to Azure Front Door — see the comment below.
-say "CDN profile: $CDN_PROFILE (Standard_Microsoft)"
-if az cdn profile show --name "$CDN_PROFILE" --resource-group "$RG" >/dev/null 2>&1; then
+# ---------------------------- Azure Front Door (Standard) --------------------
+# Classic Azure CDN (Standard_Microsoft) no longer accepts new profiles
+# (BadRequest as of 2025). Front Door Standard is the modern replacement —
+# same CDN+edge+TLS purpose, *.z01.azurefd.net hostnames, az afd CLI.
+say "Front Door profile: $AFD_PROFILE (Standard_AzureFrontDoor)"
+if az afd profile show --profile-name "$AFD_PROFILE" --resource-group "$RG" >/dev/null 2>&1; then
   say "  ↳ already exists, skipping create"
 else
-  az cdn profile create \
-    --name "$CDN_PROFILE" --resource-group "$RG" \
-    --sku Standard_Microsoft >/dev/null
+  az afd profile create \
+    --profile-name "$AFD_PROFILE" --resource-group "$RG" \
+    --sku Standard_AzureFrontDoor >/dev/null
 fi
 
-say "CDN endpoint: $CDN_ENDPOINT.azureedge.net → $PRIMARY_WEB_HOST"
-if az cdn endpoint show --name "$CDN_ENDPOINT" --profile-name "$CDN_PROFILE" --resource-group "$RG" >/dev/null 2>&1; then
+say "Front Door endpoint: $AFD_ENDPOINT"
+if az afd endpoint show --endpoint-name "$AFD_ENDPOINT" --profile-name "$AFD_PROFILE" --resource-group "$RG" >/dev/null 2>&1; then
   say "  ↳ already exists, skipping create"
 else
-  az cdn endpoint create \
-    --name "$CDN_ENDPOINT" --profile-name "$CDN_PROFILE" --resource-group "$RG" \
-    --origin "$PRIMARY_WEB_HOST" --origin-host-header "$PRIMARY_WEB_HOST" \
-    --enable-compression true --no-http true \
-    --content-types-to-compress \
-      'application/javascript' 'application/json' 'text/css' 'text/html' 'image/svg+xml' \
-    >/dev/null
+  az afd endpoint create \
+    --endpoint-name "$AFD_ENDPOINT" --profile-name "$AFD_PROFILE" --resource-group "$RG" \
+    --enabled-state Enabled >/dev/null
 fi
+
+say "Origin group: $AFD_ORIGIN_GROUP (probe '/', interval 60s)"
+if az afd origin-group show --origin-group-name "$AFD_ORIGIN_GROUP" --profile-name "$AFD_PROFILE" --resource-group "$RG" >/dev/null 2>&1; then
+  say "  ↳ already exists, skipping create"
+else
+  az afd origin-group create \
+    --origin-group-name "$AFD_ORIGIN_GROUP" --profile-name "$AFD_PROFILE" --resource-group "$RG" \
+    --probe-path '/' --probe-protocol Https --probe-request-type GET \
+    --probe-interval-in-seconds 60 \
+    --sample-size 4 --successful-samples-required 3 \
+    --additional-latency-in-milliseconds 50 >/dev/null
+fi
+
+say "Origin: $AFD_ORIGIN → $PRIMARY_WEB_HOST"
+if az afd origin show --origin-name "$AFD_ORIGIN" --origin-group-name "$AFD_ORIGIN_GROUP" --profile-name "$AFD_PROFILE" --resource-group "$RG" >/dev/null 2>&1; then
+  say "  ↳ already exists, skipping create"
+else
+  az afd origin create \
+    --origin-name "$AFD_ORIGIN" --origin-group-name "$AFD_ORIGIN_GROUP" \
+    --profile-name "$AFD_PROFILE" --resource-group "$RG" \
+    --host-name "$PRIMARY_WEB_HOST" --origin-host-header "$PRIMARY_WEB_HOST" \
+    --https-port 443 --priority 1 --weight 1000 --enabled-state Enabled >/dev/null
+fi
+
+say "Route: $AFD_ROUTE (/* → origin group, HTTPS redirect on)"
+if az afd route show --route-name "$AFD_ROUTE" --endpoint-name "$AFD_ENDPOINT" --profile-name "$AFD_PROFILE" --resource-group "$RG" >/dev/null 2>&1; then
+  say "  ↳ already exists, skipping create"
+else
+  az afd route create \
+    --route-name "$AFD_ROUTE" --endpoint-name "$AFD_ENDPOINT" \
+    --profile-name "$AFD_PROFILE" --resource-group "$RG" \
+    --origin-group "$AFD_ORIGIN_GROUP" \
+    --supported-protocols Http Https \
+    --link-to-default-domain Enabled \
+    --forwarding-protocol HttpsOnly \
+    --https-redirect Enabled \
+    --patterns-to-match '/*' >/dev/null
+fi
+
+# Resolve the actual Front Door hostname (includes a deployment-unique hash)
+AFD_HOST="$(az afd endpoint show \
+  --endpoint-name "$AFD_ENDPOINT" --profile-name "$AFD_PROFILE" --resource-group "$RG" \
+  --query hostName -o tsv 2>/dev/null || true)"
+if [ -z "${AFD_HOST:-}" ]; then
+  AFD_HOST="<resolve-via-portal>"
+fi
+say "Front Door hostname: https://$AFD_HOST"
 
 cat <<NOTE
 
-CDN endpoint created. Recommended manual configuration in the Portal
-(Azure CDN → $CDN_ENDPOINT → Rules engine):
+Front Door Standard provisioned.
+Frontends will be reachable at https://$AFD_HOST/offerings/<id>/
+(blob \$web origin handles /offerings/<id>/ → /offerings/<id>/index.html
+because index-document = index.html on the static website).
 
-  1. URL rewrite — incoming: /offerings/* → /offerings/{wildcard}/index.html
-  2. HTTPS-only redirect (308) — global
-  3. Cache-Control for /offerings/* = public, max-age=86400
-  4. Cache-Control for /api/* = no-cache, must-revalidate
-  5. Add CORS allow for the API host (Access-Control-Allow-Origin: https://$CDN_ENDPOINT.azureedge.net)
+Optional Portal tweaks:
+  · Caching: set 'Use query string' to 'Ignore' and 'Compression' to 'Enabled'
+    on the default route (Front Door → Rules → default-route → Edit).
+  · Custom domain: Front Door → Domains → +Add, then point CNAME at
+    $AFD_HOST and let Front Door issue a managed cert.
 
-See infrastructure/azure-cdn-rules.md for the exact rules and JSON snippets.
+See infrastructure/azure-cdn-rules.md for the full rules and CLI commands.
 
 NOTE
 
@@ -142,12 +189,13 @@ az webapp config appsettings set \
     DATABASE_USER="$DB_ADMIN" \
     DATABASE_PASS="$DB_PASS" \
     DATABASE_SSL=true \
-    AZURE_CDN_ENDPOINT="https://${CDN_ENDPOINT}.azureedge.net" \
+    AZURE_CDN_ENDPOINT="https://${AFD_HOST}" \
     AZURE_STORAGE_ACCOUNT="$STORAGE" \
     AZURE_RESOURCE_GROUP="$RG" \
-    AZURE_CDN_PROFILE_NAME="$CDN_PROFILE" \
-    AZURE_CDN_ENDPOINT_NAME="$CDN_ENDPOINT" \
-    CORS_ORIGIN="https://${CDN_ENDPOINT}.azureedge.net" \
+    AZURE_AFD_PROFILE="$AFD_PROFILE" \
+    AZURE_AFD_ENDPOINT="$AFD_ENDPOINT" \
+    AZURE_AFD_HOST="$AFD_HOST" \
+    CORS_ORIGIN="https://${AFD_HOST}" \
   >/dev/null
 
 # ---------------------------- Outputs ----------------------------------------
@@ -159,7 +207,7 @@ cat <<DONE
 
   Resource group         : $RG ($LOCATION)
   Storage (static web)   : https://$PRIMARY_WEB_HOST
-  CDN endpoint           : https://${CDN_ENDPOINT}.azureedge.net
+  Front Door endpoint    : https://$AFD_HOST
   PostgreSQL host        : $DB_HOST
   Database               : $DB_NAME
   API (App Service)      : https://${APP_NAME}.azurewebsites.net
@@ -169,7 +217,11 @@ Next steps:
        AZURE_CREDENTIALS              → az ad sp create-for-rbac --sdk-auth --scopes /subscriptions/<sub>/resourceGroups/$RG
        AZURE_STORAGE_CONN_STR         → az storage account show-connection-string -n $STORAGE -g $RG -o tsv
        AZURE_WEBAPP_PUBLISH_PROFILE   → az webapp deployment list-publishing-profiles -n $APP_NAME -g $RG --xml
+       AZURE_AFD_PROFILE              → $AFD_PROFILE   (repo variable, not secret)
+       AZURE_AFD_ENDPOINT             → $AFD_ENDPOINT  (repo variable, not secret)
        JWT_SECRET                     → long random string
   2. Run the SQL migrations from CI (or locally with DATABASE_HOST=$DB_HOST).
   3. Push to main; the deploy workflow uploads all 252 offering pages and the API.
+
+Public URL for a frontend (after deploy):  https://$AFD_HOST/offerings/a01/
 DONE
